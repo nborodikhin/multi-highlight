@@ -149,6 +149,11 @@ def test_help_exits_zero():
     _, _, rc = run('--help')
     assert rc == 0
 
+def test_version():
+    out, _, rc = run('--version')
+    assert rc == 0
+    assert re.match(r'^mh \S+', out.strip()), f"unexpected version output: {out!r}"
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
