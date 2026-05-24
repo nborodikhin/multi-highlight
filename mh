@@ -1,0 +1,402 @@
+#!/usr/bin/env python3
+"""mh – Multi‑term highlighter/grep‑like filter.
+
+Features
+--------
+- Sequential AND filtering via repeated ``-g`` options.
+- Exclusion filtering via ``-x``/``-v``.
+- Highlight‑only terms via positional arguments or ``-h``.
+- Multiple matching modes: ``-F`` (fixed string) or regex (default).
+- Overlap precedence: later terms overwrite earlier colored regions.
+- Automatic color rotation respecting the active color scheme.
+- ``--html`` mode – renders a ``<pre>`` block with ``<span style="...">`` markers.
+- ``--test-colors`` – prints each configured color using the highlight engine.
+- ``--no-line-buffered`` – disables line buffering (reads whole stdin at once).
+"""
+
+import sys, os, re, json, html, copy
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Helper: minimal TOML loader (fallback if tomllib unavailable)
+# ---------------------------------------------------------------------------
+try:
+    import tomllib as toml
+except ImportError:  # pragma: no cover – Python <3.11 fallback
+    def _parse_toml(content: str):
+        # Tiny parser for the subset we need: tables, string values, string arrays.
+        data = {}
+        cur = data
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if line.startswith('[') and line.endswith(']'):
+                name = line[1:-1].strip()
+                cur = data.setdefault(name, {})
+                continue
+            if '=' in line:
+                k, v = line.split('=', 1)
+                k = k.strip()
+                v = v.strip()
+                if v.startswith('['):
+                    cur[k] = json.loads(v)
+                else:
+                    cur[k] = v.strip('"')
+        return data
+    toml = None
+    toml_load = lambda f: _parse_toml(f.read().decode())
+else:
+    toml_load = toml.load
+
+# ---------------------------------------------------------------------------
+# Config handling
+# ---------------------------------------------------------------------------
+DEFAULT_CONFIG = {
+    "defaults": {
+        "line_buffered": True,
+        "ignore_case": False,
+        "word_match": False,
+        "term_matching": "regexp",
+        "mode": "highlight",
+    },
+    "colors": [
+        "red on default",
+        "green on default",
+        "yellow on default",
+        "blue on default",
+        "magenta on default",
+        "cyan on default",
+        "italic red on default",
+        "italic green on default",
+        "italic yellow on default",
+        "black on red",
+        "black on green",
+        "black on yellow",
+        "black on blue",
+        "black on magenta",
+        "black on cyan",
+        "italic black on red",
+        "italic black on green",
+        "italic black on yellow",
+        "italic black on blue",
+        "italic black on magenta",
+        "italic black on cyan",
+    ],
+}
+
+CONFIG_PATH = Path(os.path.expanduser("~/.config/mh/config.toml"))
+
+def load_config():
+    cfg = copy.deepcopy(DEFAULT_CONFIG)
+    if CONFIG_PATH.is_file():
+        try:
+            with open(CONFIG_PATH, "rb") as f:
+                data = toml_load(f)
+        except Exception:
+            data = {}
+        if isinstance(data.get('defaults'), dict):
+            cfg['defaults'].update(data['defaults'])
+        if isinstance(data.get('colors'), list):
+            cfg['colors'] = data['colors']
+    return cfg
+
+# ---------------------------------------------------------------------------
+# ANSI color handling
+# ---------------------------------------------------------------------------
+ANSI_COLORS = {
+    "black": 30, "red": 31, "green": 32, "yellow": 33,
+    "blue": 34, "magenta": 35, "cyan": 36, "white": 37,
+    "default": 39,
+    "bright_black": 90, "bright_red": 91, "bright_green": 92,
+    "bright_yellow": 93, "bright_blue": 94, "bright_magenta": 95,
+    "bright_cyan": 96, "bright_white": 97,
+}
+
+def _parse_style(spec: str):
+    bold = spec.startswith('bold ')
+    if bold: spec = spec[5:]
+    italic = spec.startswith('italic ')
+    if italic: spec = spec[7:]
+    return bold, italic, spec
+
+def parse_color_spec(spec: str):
+    bold, italic, spec = _parse_style(spec)
+    fg, _, bg = spec.partition(' on ')
+    fg = fg.strip()
+    bg = bg.strip() or "default"
+    def to_seq(col, is_bg=False):
+        if col.startswith('#') and len(col) == 7:
+            r = int(col[1:3], 16)
+            g = int(col[3:5], 16)
+            b = int(col[5:7], 16)
+            return f"\x1b[{48 if is_bg else 38};2;{r};{g};{b}m"
+        if col.isdigit():
+            return f"\x1b[{48 if is_bg else 38};5;{int(col)}m"
+        code = ANSI_COLORS.get(col.lower(), 39)
+        base = 40 if is_bg else 30
+        return f"\x1b[{base + (code - 30)}m"
+    fg_seq = ("\x1b[1m" if bold else "") + ("\x1b[3m" if italic else "") + to_seq(fg, False)
+    return fg_seq, to_seq(bg, True)
+
+def ansi_wrap(text: str, fg_seq: str, bg_seq: str):
+    reset = "\x1b[0m"
+    return f"{fg_seq}{bg_seq}{text}{reset}"
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+def _print_help():
+    print("""\
+usage: mh [options] [term] ...
+
+Highlight multiple patterns in the input stream.
+
+Filtering and highlighting:
+  -h, --highlight        Highlight mode - highlight following terms (default)
+  -g, --grep             Grep mode - keep lines that match following terms
+  -n                     No highlighting for matching terms (grep mode only); cleared by -h
+  -x, -v, --invert-match Exclude mode - keep lines that do not match terms (same as grep -v)
+
+Matching options:
+  -e, --regexp         Terms are regular expressions (default)
+  -F, --fixed-strings  Terms are literal strings
+  -i, --ignore-case    Case-insensitive matching
+  --no-ignore-case     Case-sensitive matching (default)
+  -w, --word-match     Match whole words only
+  -W, --no-word-match  Match anywhere (default)
+
+Output options:
+  --ansi               Emit ANSI-colored output (default)
+  --html               Emit span-tagged lines for embedding in <pre>
+
+Other:
+  --line-buffered      Process input line by line (default)
+  --no-line-buffered   Buffer all stdin before processing
+  --test-colors        Print palette color samples and exit
+  --config-path        Print config file path and exit
+  --create-config      Write default config (does not overwrite) and exit
+  --help               Show this message and exit
+""")
+
+class _Args:
+    html = False
+    test_colors = False
+    create_config = False
+    config_path = False
+    no_line_buffered = False
+
+args = _Args()
+
+cfg = load_config()
+ordered_colors = cfg['colors']
+
+include_terms   = []
+exclude_terms   = []
+highlight_terms = []
+
+_term_mode   = cfg['defaults'].get('mode', 'highlight')
+_match_fixed = cfg['defaults'].get('term_matching', 'regexp') == 'fixed'
+_ignore_case = cfg['defaults'].get('ignore_case', False)
+_word_match  = cfg['defaults'].get('word_match', False)
+_no_highlight = False       # -n: suppress highlight in grep mode
+
+def _compile(term):
+    flags = re.IGNORECASE if _ignore_case else 0
+    pat = re.escape(term) if _match_fixed else term
+    if _word_match:
+        pat = r'\b' + pat + r'\b'
+    return re.compile(pat, flags)
+
+def _add_term(term):
+    pat = _compile(term)
+    if _term_mode == 'grep':
+        include_terms.append((term, pat))
+        if not _no_highlight:
+            highlight_terms.append((term, pat))
+    elif _term_mode == 'exclude':
+        exclude_terms.append((term, pat))
+    else:
+        highlight_terms.append((term, pat))
+
+_argv = sys.argv[1:]
+_i = 0
+while _i < len(_argv):
+    _a = _argv[_i]
+    if _a == '--help':
+        _print_help(); sys.exit(0)
+    elif _a in ('-i', '--ignore-case'):
+        _ignore_case = True
+    elif _a == '--no-ignore-case':
+        _ignore_case = False
+    elif _a in ('-w', '--word-match'):
+        _word_match = True
+    elif _a in ('-W', '--no-word-match'):
+        _word_match = False
+    elif _a in ('-e', '--regexp'):
+        _match_fixed = False
+    elif _a in ('-F', '--fixed-strings'):
+        _match_fixed = True
+    elif _a == '--html':
+        args.html = True
+    elif _a == '--ansi':
+        args.html = False
+    elif _a == '--test-colors':
+        args.test_colors = True
+    elif _a == '--create-config':
+        args.create_config = True
+    elif _a == '--config-path':
+        args.config_path = True
+    elif _a == '--no-line-buffered':
+        args.no_line_buffered = True
+    elif _a == '--line-buffered':
+        args.no_line_buffered = False
+    elif _a in ('-g', '--grep'):
+        _term_mode = 'grep'
+    elif _a in ('-h', '--highlight'):
+        _term_mode = 'highlight'; _no_highlight = False
+    elif _a in ('-x', '-v', '--invert-match'):
+        _term_mode = 'exclude'
+    elif _a == '-n':
+        _no_highlight = True
+    elif _a == '--':
+        for _t in _argv[_i+1:]: _add_term(_t)
+        break
+    elif not _a.startswith('-'):
+        _add_term(_a)
+    else:
+        print(f"mh: unknown option: {_a}", file=sys.stderr); sys.exit(1)
+    _i += 1
+
+# ---------------------------------------------------------------------------
+# --create-config: write default config file and exit
+# ---------------------------------------------------------------------------
+def _render_toml_value(v):
+    if isinstance(v, bool):
+        return 'true' if v else 'false'
+    if isinstance(v, str):
+        return f'"{v}"'
+    return str(v)
+
+def build_default_toml():
+    lines = []
+    d = DEFAULT_CONFIG
+    COMMENTS = {
+        'term_matching': '"regexp" or "fixed"',
+        'mode': '"highlight", "grep", or "exclude"',
+        'ignore_case': 'true = case-insensitive (-i)',
+        'word_match': 'true = whole-word matching only (-w)',
+    }
+    lines.append('[defaults]')
+    for k, v in d['defaults'].items():
+        line = f'{k} = {_render_toml_value(v)}'
+        if k in COMMENTS:
+            line += f'  # {COMMENTS[k]}'
+        lines.append(line)
+    entries = ''.join(f'    "{v}",\n' for v in d['colors'])
+    lines.append(f'\n# Color syntax: "[bold] [italic] <color> on <color>"')
+    lines.append(f'# "color" is: name, 0..255, #rrggbb, or "default")')
+    lines.append(f'colors = [\n{entries}]')
+    return '\n'.join(lines) + '\n'
+
+if args.config_path:
+    print(CONFIG_PATH)
+    sys.exit(0)
+
+if args.create_config:
+    if CONFIG_PATH.exists():
+        print(f"Config already exists: {CONFIG_PATH}", file=sys.stderr)
+        sys.exit(1)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(build_default_toml())
+    print(f"Created: {CONFIG_PATH}")
+    sys.exit(0)
+
+# ---------------------------------------------------------------------------
+# Color index helpers
+# ---------------------------------------------------------------------------
+def color_str(i: int) -> str:
+    return ordered_colors[i % len(ordered_colors)]
+
+def spec_to_css(spec: str) -> str:
+    bold, italic, spec = _parse_style(spec)
+    style = []
+    if bold: style.append('font-weight:bold')
+    if italic: style.append('font-style:italic')
+    fg, _, bg = spec.partition(' on ')
+    if fg: style.append(f"color:{fg}")
+    if bg and bg != 'default': style.append(f"background:{bg}")
+    return ';'.join(style)
+
+term_ansi = [parse_color_spec(color_str(i)) for i in range(len(highlight_terms))]
+term_css  = [spec_to_css(color_str(i))      for i in range(len(highlight_terms))]
+
+def _apply(line, color_vals, emit_plain, emit_span):
+    char_map = [None] * len(line)
+    for i, (_, pat) in enumerate(highlight_terms):
+        val = color_vals[i]
+        for m in pat.finditer(line):
+            start, end = m.span()
+            char_map[start:end] = [val] * (end - start)
+    out = []
+    i = 0
+    while i < len(line):
+        j = i + 1
+        if char_map[i] is None:
+            while j < len(line) and char_map[j] is None:
+                j += 1
+            out.append(emit_plain(line[i:j]))
+        else:
+            val = char_map[i]
+            while j < len(line) and char_map[j] == val:
+                j += 1
+            out.append(emit_span(line[i:j], val))
+        i = j
+    return ''.join(out)
+
+def apply_highlighting(line: str) -> str:
+    return _apply(line, term_ansi,
+        emit_plain=lambda s: s,
+        emit_span=lambda s, v: ansi_wrap(s, *v))
+
+def apply_html(line: str) -> str:
+    return _apply(line, term_css,
+        emit_plain=html.escape,
+        emit_span=lambda s, v: f'<span style="{v}">{html.escape(s)}</span>')
+
+# ---------------------------------------------------------------------------
+# Main processing loop
+# ---------------------------------------------------------------------------
+def line_passes(line: str) -> bool:
+    for _, pat in include_terms:
+        if not pat.search(line):
+            return False
+    for _, pat in exclude_terms:
+        if pat.search(line):
+            return False
+    return True
+
+if args.test_colors:
+    import subprocess
+    cmd = [sys.executable, os.path.abspath(sys.argv[0])] + ordered_colors
+    if args.html:
+        cmd += ['--html']
+    w = len(str(len(ordered_colors) - 1))
+    stdin_text = ''.join(f"Color {i:{w}}: {spec}\n" for i, spec in enumerate(ordered_colors))
+    result = subprocess.run(cmd, input=stdin_text, text=True)
+    sys.exit(result.returncode)
+
+if args.no_line_buffered:
+    data = sys.stdin.read()
+    lines = data.splitlines(True)
+else:
+    lines = sys.stdin
+
+for raw_line in lines:
+    line = raw_line.rstrip('\r\n')
+    if not line_passes(line):
+        continue
+    if args.html:
+        sys.stdout.write(apply_html(line) + '\n')
+    else:
+        sys.stdout.write(apply_highlighting(line) + '\n')
