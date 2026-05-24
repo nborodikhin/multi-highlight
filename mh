@@ -17,6 +17,8 @@ Features
 import sys, os, re, json, html, copy
 from pathlib import Path
 
+VERSION = "0.0.0"
+
 # ---------------------------------------------------------------------------
 # Helper: minimal TOML loader (fallback if tomllib unavailable)
 # ---------------------------------------------------------------------------
@@ -147,8 +149,8 @@ def ansi_wrap(text: str, fg_seq: str, bg_seq: str):
 # Argument parsing
 # ---------------------------------------------------------------------------
 def _print_help():
-    print("""\
-usage: mh [options] [term] ...
+    print(f"""\
+usage: {os.path.basename(sys.argv[0])} [options] [term] ...
 
 Highlight multiple patterns in the input stream.
 
@@ -176,6 +178,7 @@ Other:
   --test-colors        Print palette color samples and exit
   --config-path        Print config file path and exit
   --create-config      Write default config (does not overwrite) and exit
+  --version            Show version and exit
   --help               Show this message and exit
 """)
 
@@ -223,7 +226,9 @@ _argv = sys.argv[1:]
 _i = 0
 while _i < len(_argv):
     _a = _argv[_i]
-    if _a == '--help':
+    if _a == '--version':
+        print(f"mh {VERSION}"); sys.exit(0)
+    elif _a == '--help':
         _print_help(); sys.exit(0)
     elif _a in ('-i', '--ignore-case'):
         _ignore_case = True
