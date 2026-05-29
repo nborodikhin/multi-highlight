@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mh &#8211; Multi&#8209;term Highlighter</title>
+  <style>
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 16px; line-height: 1.6; color: #24292e; background: #fff;
+  max-width: 860px; margin: 0 auto; padding: 2rem 1.5rem 4rem;
+}
+@media (max-width: 600px) { body { padding: 1rem 1rem 2rem; } }
+header {
+  border-bottom: 1px solid #e1e4e8; margin-bottom: 2rem; padding-bottom: 0.75rem;
+  display: flex; justify-content: flex-end; align-items: center;
+}
+header a {
+  display: inline-flex; align-items: center; gap: 0.4em;
+  font-size: 0.9rem; color: #586069; text-decoration: none; font-weight: 500;
+}
+header a:hover { color: #0366d6; text-decoration: underline; }
+h1 { font-size: 2rem; border-bottom: 1px solid #e1e4e8; padding-bottom: 0.3em; }
+h2 { font-size: 1.5rem; border-bottom: 1px solid #e1e4e8; padding-bottom: 0.2em; margin-top: 1.5em; }
+h3 { font-size: 1.25rem; margin-top: 1.25em; }
+pre {
+  background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 6px;
+  padding: 1em 1.2em; overflow-x: auto; font-size: 0.88em;
+}
+code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; font-size: 0.9em; }
+p > code, li > code {
+  background: #f6f8fa; border: 1px solid #e1e4e8; border-radius: 3px; padding: 0.15em 0.4em;
+}
+img { max-width: 100%; height: auto; display: block; margin: 1em 0; border-radius: 4px; }
+table { border-collapse: collapse; width: 100%; margin: 1em 0; overflow-x: auto; display: block; }
+th, td { border: 1px solid #e1e4e8; padding: 0.5em 0.75em; text-align: left; white-space: nowrap; }
+th { background: #f6f8fa; font-weight: 600; }
+tr:nth-child(even) td { background: #fafbfc; }
+ul { padding-left: 1.5em; }
+li { margin: 0.25em 0; }
+footer {
+  margin-top: 3rem; padding-top: 1rem; border-top: 1px solid #e1e4e8;
+  font-size: 0.85rem; color: #586069; text-align: center;
+}
+footer a { color: #0366d6; text-decoration: none; }
+footer a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+<header>
+  <a href="https://github.com/nborodikhin/multi-highlight" target="_blank" rel="noopener">
+    <svg height="20" viewBox="0 0 16 16" width="20" aria-hidden="true" fill="currentColor"><path fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+    View on GitHub
+  </a>
+</header>
+<main>
+<h1 id="mh-multiterm-highlighter">mh – Multi‑term Highlighter</h1>
+
+<h2 id="overview">Overview</h2>
+
+<p><code>mh</code> is a lightweight tool that behaves similar to <code>grep</code> but highlights multiple terms using different colors.</p>
+
+<p><code>mh</code> can:</p>
+<ul>
+  <li>Highlight unlimited number of terms (unlike GNU grep which highlights only one match)</li>
+  <li>Filter input lines, as both <code>grep</code> and <code>grep -v</code> would.</li>
+  <li>Choose pattern match between regular expressions and fixed strings (as <code>grep</code> / <code>grep -F</code>)</li>
+  <li>Case sensitive and whole-word-only matching (as <code>grep -i</code> and <code>grep -w</code>)</li>
+  <li>Use user-configured set of ANSI colors.</li>
+  <li>Auto‑rotate colors when there are more patterns than colors.</li>
+</ul>
+
+<p>This is an indispensible tool to interactively and iteratively analyze large volumes of data such as log files, while keeping visual anchors during investigation. An analysis session usually looks like:</p>
+<ul>
+  <li>use mh to process and output log file</li>
+  <li>find an object of interest (e.g. an object id), add highlighting term to <code>mh</code></li>
+  <li>add filtering expressions to <code>mh</code></li>
+  <li>hide log lines from a chatty service</li>
+  <li>keep log lines from a particular class</li>
+  <li>repeat</li>
+</ul>
+
+<p>Example - highlight variables in the script:</p>
+
+<img src="resources/sample_mh_-F_-w_raw_line_line.svg" alt="$ cat mh | mh -F -w raw_line line | tail -8">
+
+<h2 id="installation">Installation</h2>
+
+<pre><code class="language-bash">$ chmod +x mh
+$ cp mh ~/bin/mh          # or any directory on $PATH
+$ mh --create-config      # optional - write default ~/.config/mh/config.toml</code></pre>
+
+<p>The script requires <strong>Python 3.8+</strong> and only uses the standard library.</p>
+
+<h2 id="usage">Usage</h2>
+
+<p>Highlight only – no filtering:</p>
+
+<img src="resources/sample_mh_sample_text.svg" alt="$ echo &quot;sample text&quot; | mh sample text">
+
+<p>Filter lines containing both "foo" and "bar" (AND chain):</p>
+
+<img src="resources/sample_mh_-g_foo_-g_bar.svg" alt="$ printf &quot;foo bar baz\nfoo only\nbar only\n&quot; | mh -g foo -g bar">
+
+<p>Filter but exclude lines containing "ignore":</p>
+
+<img src="resources/sample_mh_-g_pattern_-x_ignore.svg" alt="$ printf &quot;pattern here\npattern ignore me\n&quot; | mh -g pattern -x ignore">
+
+<p>Overlapping terms – later terms take precedence:</p>
+
+<img src="resources/sample_mh_aaa_abc.svg" alt="$ echo &quot;zzzaaabczzz&quot; | mh aaa abc">
+
+<p>Filter log lines by level:</p>
+
+<img src="resources/sample_mh_-g_ERROR.svg" alt="$ printf &quot;INFO server started\nERROR connection refused\n&quot; | mh -g ERROR">
+
+<p>Test color palette:</p>
+
+<img src="resources/sample_mh_--test-colors.svg" alt="$ mh --test-colors">
+
+<h2 id="configuration">Configuration</h2>
+
+<p>Run <code>mh --create-config</code> to write a default config to <code>~/.config/mh/config.toml</code>:</p>
+
+<pre><code class="language-toml">[defaults]
+line_buffered = true
+ignore_case = false  # true = case-insensitive (-i)
+word_match = false   # true = whole-word matching only (-w)
+term_matching = "regexp"  # "regexp" or "fixed"
+mode = "highlight"        # "highlight", "grep", or "exclude"
+
+colors = [
+    "red on default",
+    "green on default",
+    "yellow on default",
+    "blue on default",
+    "magenta on default",
+    "cyan on default",
+    "italic red on default",
+    ...
+]</code></pre>
+
+<p>Each entry is a color spec:</p>
+
+<pre><code>[bold] [italic] &lt;fg&gt; [on &lt;bg&gt;]</code></pre>
+
+<p><code>fg</code> and <code>bg</code> accept any of:</p>
+
+<table>
+<thead><tr>
+  <th>Format</th>
+  <th>Example</th>
+  <th>Notes</th>
+</tr></thead>
+<tbody>
+<tr>
+  <td>Named color</td>
+  <td><code>red</code>, <code>bright_cyan</code>, <code>default</code></td>
+  <td><code>black</code> <code>red</code> <code>green</code> <code>yellow</code> <code>blue</code> <code>magenta</code> <code>cyan</code> <code>white</code>, plus <code>bright_</code> variants</td>
+</tr>
+<tr>
+  <td>8-bit index</td>
+  <td><code>196</code></td>
+  <td>0–15: standard colors, 16–231: 6×6×6 color cube, 232–255: greyscale ramp</td>
+</tr>
+<tr>
+  <td>24-bit hex</td>
+  <td><code>#e06c75</code></td>
+  <td>Full RGB, <code>#rrggbb</code></td>
+</tr>
+</tbody></table>
+
+<p>Use <code>default</code> for fg or bg to leave it unset (inherits from the terminal). The <code>on &lt;bg&gt;</code> part is optional and defaults to <code>on default</code>.</p>
+
+<p>Examples: <code>red</code>, <code>bold blue on default</code>, <code>italic black on red</code>, <code>#e06c75 on #282c34</code>, <code>bold bright_cyan on 235</code>.</p>
+
+<h2 id="license">License</h2>
+
+<p>MIT – feel free to copy, modify, and distribute.</p>
+
+</main>
+<footer>
+  <p>
+    <a href="https://github.com/nborodikhin/multi-highlight" target="_blank" rel="noopener">nborodikhin/multi-highlight</a>
+    &nbsp;&mdash;&nbsp; MIT License
+  </p>
+</footer>
+</body>
+</html>
